@@ -1,0 +1,384 @@
+---
+title: "Práctica Validez"
+author: "Héctor Nájera"
+date: "14/11/2024"
+output: html_document
+---
+
+# Validez
+
+En esta práctica nos concentraremos en el escrutinio en **R** de distintos tipos de validez como: de criterio y constructo. 
+
+Recordemos que sin confiabilidad no tiene mucho sentido hablar de validez y que para llegar a esta etapa debemos estar seguros de que la confiabilidad de los puntajes/scores se sostiene. 
+
+## Validez de criterio
+
+Primero establecemos el directorio de trabajo y cargamos los paquetes necesarios:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(plyr)
+library(stats)
+library(lavaan)
+library(ggplot2)
+```
+
+Usaremos los datos `"Rel_MD_data_1_1.dat"`. Estos datos contienen 11 indicadores binarios sobre un índice de privación material. Además, contiene algunas variables auxiliares que serán útiles para la validación de criterio. 
+
+Los datos los guardaremos en el objeto `D`. Asignamos etiquetas a las variables con `colnames` y dividimos entre 100 la variable `resources` para que tenga más sentido la interpretación. 
+
+```{r  message=FALSE, warning=FALSE}
+D<-read.table("Rel_MD_data_1_1.dat")
+colnames(D)<-c("x1","x2","x3","x4","x5","x6",
+                      "x7","x8","x9","x10","x11",
+                      "resources","educ_yr","occupation",
+                      "hh_members","class")
+D$resources<-D$resources/100
+D$ds<-rowSums(D[,c(1:9)])
+```
+
+### Validez de criterio: A la antigua
+
+La validez de criterio o predictiva parte de la hipótesis de que hay una relación entre nuestro constructo y sus consecuencias/causas. 
+
+Una de las formas antiguas (aunque aún utilizadas) de validación consiste en validar los indicadores y no el constructo. 
+
+En este caso, esperaríamos una relación entre la probabilidad de tener privación y tener cierto nivel de recursos. ¿Qué tipo de relación esperaríamos?
+
+¿Qué tipo de análisis tendríamos que hacer?
+
+#### Correlación y Regresión
+
+En el tipo de análisis más básico (pero necesario) esperaríamos cierta relación entre tener privación (0=Sin privación; 1=Con privación) y los años de escolaridad. 
+
+```{r  message=FALSE, warning=FALSE}
+cor(D$x1,D$educ_yr, method="spearman")
+```
+
+La correlación es útil pero siempre es mucho más ilustrativa una gráfica. Podemos hacer una gráfica de cajas con la función `boxplot` (pro tip: Usen ggplot2 siempre). En este caso boxplot recodifica las variables! Cuidado! 
+
+```{r  message=FALSE, warning=FALSE}
+boxplot(D$x1,D$educ_yr)
+```
+
+OK la relación es la esperada pero lo que idealmente buscamos es la relación ajustada (considerando ciertos controles). Como la variable dependiente es binaria tenemos que usar la función `glm`. Aquí usamos `poisson` con `log` link para obtener riesgos relativos y no odds ratios (Podrían usar `binomial(link = "logit")` para obtener odds ratios. Recuerden sus cursos de regresión es una cuestión de usar el denominador con más sentido.
+
+```{r}
+summary(glm(x1 ~ resources +  hh_members + educ_yr, data=D, family=poisson(link="log")))
+```
+
+Lo que tendríamos que hacer es una regresión donde los recursos predicen la probabilidad de privación para cada uno de los indicadores. Sin embargo, tenemos **11** indicadores, o sea **11** regresiones. Además, la variable dependiente es categórica por lo que no haremos una regresión lineal sino con distribución *poisson* (puede ser logit o probit, también). Para estimar los modelos usamos la función `glm()` (Generalized Linear Model). Lo que haremos es crear una función llamada `lms` que va a iterar el mismo modelo para las **11** variables independientes, va a extraer las razones de riesgo y los intervalos de confianza. Todo lo guardaremos en la lista `coefs`. 
+
+```{r  message=FALSE, warning=FALSE}
+
+lms<-function(index)
+{
+  fit<-glm(D[,index] ~ D$resources +
+                              D$hh_members,
+           family=poisson(link="log"))
+  exp(cbind(OR = coef(fit), confint(fit)))
+}
+
+coefs<-lapply(1:11,lms)
+```
+
+Por ejemplo, veamos que pasa para el primer indicador:
+
+```{r}
+coefs[[1]]
+coefs[[2]]
+```
+
+Si queremos ver todos con intervalos de confianza al 95%, entonces necesitamos crear una tabla. Usaremos `lapply()` para extraer de los **11** objetos en la lista los coeficientes. 
+
+
+```{r, results='hide'}
+coefs<-lapply(coefs, function(x) unlist(x[2,]))
+coefs<- as.matrix(matrix(unlist(coefs), nrow=length(coefs), byrow=T))
+coefs<-data.frame(rbind(coefs[,c(1,2,3)]))
+
+coefs$item <- rep(c("x1","x2","x3","x4","x5","x6",
+                      "x7","x8","x9","x10","x11"),1)
+coefs$var<-c(rep("Resources (*100)", 11))
+coefs[,1:4]
+```
+
+También podemos graficarlos usando `ggplot()`. Podemos ver que no hay evidencia de que los indicadores x10 y x11 estén asociados con recursos.
+
+```{r val1, echo=TRUE, message=F, fig.cap="This plot shows the Relative Risk Ratios for the resources variable, adjusted by the household size. Having more resources reduces the risk of being deprived of the item x, as expected."}
+p<- ggplot(coefs, aes(x=item,y=X1)) + geom_point() +  
+  geom_errorbar(aes(ymin=X2, ymax=X3)) +
+ theme_bw() + scale_y_continuous(trans = 'log10', limits = c(.9, 1.1))
+p + facet_grid(. ~ var) + labs(y="Relative Risk Ratios") + geom_hline(yintercept=1, linetype="dashed",
+                color = "red", size=2)
+```
+
+### Grados de libertad
+
+En el caso anterior hice un análisis de variable por variable, pero que pasa si lo hago de otra manera?
+
+```{r}
+fit<-glm(D$resources ~ D$x1 + D$x2 + D$x3 + D$x4 + D$x5 + D$x6 + D$x7 + D$x8 + D$x9 + D$x10 + D$x11 + D$hh_members, family="gaussian")
+summary(fit)
+```
+
+```{r}
+xnam <- paste("x", 1:11, sep="")
+summary(glm(as.formula(paste("resources ~ ", paste(xnam, collapse= "+"), "+  hh_members")) , data=D))
+```
+
+```{r}
+cor(D[,1:11])
+```
+
+```{r}
+fit<-glm(log(D$resources) ~ D$x1 + D$x3 + D$x4 + D$x5 + D$x6 + D$x7 + D$x8 + D$x9 + D$x10 + D$x11 + D$hh_members, family="gaussian")
+summary(fit)
+```
+
+### ¿Qué pasa cuando no tengo una variable que fue explícitamente construida para validar?
+
+Tendríamos que usar alguna variable auxiliar. En este caso ocupación o educación. El ejercicio es muy similar al anterior, pero usamos otros predictores. 
+
+```{r  message=FALSE, warning=FALSE}
+lms<-function(index)
+{
+  fit<-glm(D[,index] ~ D$occupation +
+                              D$educ_yr +
+                              D$hh_members,
+           family=poisson(link="log"))
+  exp(cbind(OR = coef(fit), confint(fit)))
+}
+
+coefs<-lapply(1:11,lms)
+
+coefs[[1]]
+```
+
+Tenemos que hace una serie de manipulaciones para poder leer los coeficientes de los 11 modelos. Esto fundamentalmente implica:
+
+1 Extraer los coeficientes de cada modelo con `lapply` (Aplicar la misma función a una lista de objetos.)
+
+2 Juntarlos en un mismo objeto
+
+3 Asignar etiquetas
+
+
+```{r}
+coefs<-lapply(coefs, function(x) unlist(x[2:3,]))
+coefs<- as.matrix(matrix(unlist(coefs), nrow=length(coefs), byrow=T))
+coefs<-data.frame(rbind(coefs[,c(1,3,5)],coefs[,c(2,4,6)]))
+
+coefs$item <- rep(c("x1","x2","x3","x4","x5","x6",
+                      "x7","x8","x9","x10","x11"),2)
+coefs$var<-c(rep("Occupation (Skill) scale", 11), rep("Education years", 11))
+coefs
+```
+
+Y podemos graficarlos de la siguiente manera:
+
+```{r val2, echo=TRUE, message=F, fig.cap="This plot shows the Relative Risk Ratios for each item using two validators (adjusted by the total household members)"}
+p<- ggplot(coefs, aes(x=item,y=X1)) + geom_point() +  
+  geom_errorbar(aes(ymin=X2, ymax=X3)) +
+ theme_bw() + scale_y_continuous(trans = 'log10', limits = c(.8, 1.2))
+p + facet_grid(. ~ var) + labs(y="Relative Risk Ratios") + geom_hline(yintercept=1, linetype="dashed",
+                color = "red", size=2)
+```
+
+## Validez de Constructo
+
+La validez de constructo se enfoca en si el modelo global se sostiene, i.e. que efectivamente en los datos parece haber las dimensiones que se piensan existen por teoría. En este caso se parte de que hay tres dimensiones y un factor de alto orden. Con tres indicadores por dimensión. Estimamos el modelo con la función `sem()` en lavaan. 
+
+```{r, message=FALSE, warning=FALSE}
+MD_model <- ' f1  =~ x1 + x2 + x3
+              f2 =~ x4 + x5 + x6
+              f3   =~ x7 + x8 + x9
+               h =~ f1 + f2 + f3
+'
+
+fit <- sem(MD_model,
+           data = D,ordered=c("x1","x2","x3","x4","x5",
+                                     "x6","x7","x8","x9"))
+```
+
+Además de inspeccionar las cargas factoriales, en la validez de constructo lo que importa es si globalmente nuestro modelo ajusta a los datos. Para ello usamos los estadísticos tli, cfi, rmsea y chisq. Observamos que en todos los casos el ajuste del modelo es muy bueno. 
+
+```{r, message=FALSE, warning=FALSE}
+chisq<-fitmeasures(fit,fit.measures = c("chisq","df","pvalue"))
+relfit<-fitmeasures(fit,fit.measures = c("tli","cfi"))
+rmsea<-fitmeasures(fit,fit.measures = c("rmsea", "rmsea.ci.lower",
+                                        "rmsea.ci.upper", "rmsea.pvalue"))
+chisq
+relfit
+rmsea
+```
+
+Podemos utilizar el paquete `semPlot()` para producir el diagrama con nuestros resultados. ¿Qué significan los resultados? 
+
+```{r}
+library(lavaanExtra)
+nice_lavaanPlot(fit, sig=1, graph_options = list(rankdir="LR", overlap="false"),  edge_options = list(color = "red"))
+```
+
+# Segunda parte
+
+## Validez de concurrente, constructo y de criterio con SEM
+
+¡Gracias a 100 años de métodos para variables latentes tenemos SEM! 
+
+Ahora podemos hacer este tipo de análisis en un paso. Veamos cómo luce el modelo. 
+
+## Validez concurrente
+
+Supongamos que el modelo de medición propone que hay tres medidciones alternativas y estas deberían concurrir. Esto significaría que los factores deberían están correlacionados.
+
+```{r}
+MD_model <- ' f1  =~ x1 + x2 + x3
+              f2 =~ x4 + x5 + x6
+              f3   =~ x7 + x8 + x9'
+
+fit <- sem(MD_model,
+           data = D,ordered=c("x1","x2","x3","x4","x5",
+                                     "x6","x7","x8","x9"))
+summary(fit, standardized=TRUE, rsquare=TRUE)
+```
+
+## Modelo alternativo
+
+Otro modelo muy popular de validación es cuando se piensa que los indicadores de un índice deberían "concurrir" con otros indicadores. Por ejemplo, que otra muestra de indicadores del fenómeno de interés (x4 a x6) esté correlacionada con los indicadores observados. 
+
+Para ello basta especificar las correlaciones de la siguiente manera ¿Podría ser una regresión?
+
+```{r}
+MD_model <- ' f1  =~ x1 + x2 + x3
+              x1 ~~ x4 + x5 + x6
+              x2 ~~ x4 + x5 + x6
+              x3 ~~ x4 + x5 + x6'
+
+fit <- sem(MD_model,
+           data = D,ordered=c("x1","x2","x3","x4","x5",
+                                     "x6"))
+summary(fit, rsquare=TRUE)
+```
+
+## Modelo de validación completo
+
+Bajo un modelo teórico bien especificado, debería ser posible estimar la relación del factor de interés con su posible validador. En este caso h respecto a la variable de recursos (ajustada por los miembros del hogar).
+
+```{r, warning=FALSE, message=FALSE}
+MD_model <- ' f1  =~ x1 + x2 + x3
+              f2 =~ x4 + x5 + x6
+              f3   =~ x7 + x8 + x9
+               h =~ f1 + f2 + f3
+               h ~ resources + hh_members
+'
+
+fit <- sem(MD_model,
+           data = D,ordered=c("x1","x2","x3","x4","x5",
+                                     "x6","x7","x8","x9"))
+summary(fit, rsquare=TRUE)
+```
+
+### Graficamos el modelo anterior
+
+```{r}
+#lavaanPlot(model = fit, graph_options = list(layout = "twopi"), node_options = list(shape = "box", fontname = "Helvetica"), edge_options = list(color = "grey"), coefs = TRUE, covs = TRUE, stars = TRUE, digits = 1, stand = TRUE)
+
+library(lavaanExtra)
+nice_lavaanPlot(fit, sig=1, graph_options = list(rankdir="LR", overlap="false"),  edge_options = list(color = "red"))
+```
+
+Ahora examinamos el ajuste global. ¿Es necesario un buen ajuste global? Depende de la hipótesis. 
+
+```{r}
+chisq<-fitmeasures(fit,fit.measures = c("chisq","df","pvalue"))
+relfit<-fitmeasures(fit,fit.measures = c("tli","cfi"))
+rmsea<-fitmeasures(fit,fit.measures = c("rmsea", "rmsea.ci.lower",
+                                        "rmsea.ci.upper", "rmsea.pvalue"))
+chisq
+relfit
+rmsea
+```
+
+El parámetro decisivo en la validez de criterio es la pendiente de la relación entre recursos y el factor. Veamos qué resultado obtuvimos.
+
+Noten que otra hipótesis sería sobre la magnitud del parámetro (**¿Bayes?**)
+
+```{r}
+slope<-as.data.frame(parameterEstimates(fit))
+slope[13,]
+```
+
+# Alternativa con regresiones específicas por indicador en el contexto del modelo latente
+
+SEM es lo suficientemente flexible para poder estimar regresiones condicionadas en el modelo estimado. Por ejemplo, la relación de cada indicador con sus validadores:
+
+
+```{r, warning=FALSE, message=FALSE}
+MD_model <- ' f1  =~ x1 + x2 + x3
+              f2 =~ x4 + x5 + x6
+              f3   =~ x7 + x8 + x9
+               h =~ f1 + f2 + f3
+               x1 ~ resources + hh_members
+               x2 ~ resources + hh_members
+               x3 ~ resources + hh_members
+               x4 ~ resources + hh_members
+               x5 ~ resources + hh_members
+               x6 ~ resources + hh_members
+               x7 ~ resources + hh_members
+               x8 ~ resources + hh_members
+               x9 ~ resources + hh_members
+'
+
+fit2 <- sem(MD_model,
+           data = D,ordered=c("x1","x2","x3","x4","x5",
+                                     "x6","x7","x8","x9"))
+ summary(fit2)
+```
+
+## Sobre-ajuste a los datos
+
+```{r}
+nice_lavaanPlot(fit2, sig=1, graph_options = list(rankdir="LR", overlap="false"),  edge_options = list(color = "red"))
+#lavaanPlot(model = fit2, graph_options = list(layout = "neato",  overlap="false"), node_options = list(shape = "box", fontname = "Helvetica"), edge_options = list(color = "grey"), coefs = TRUE, covs = TRUE, stars = TRUE,  stand = TRUE)
+```
+
+## Validez de criterio con SEM
+
+Ahora lo que hacemos es hacer regresiones para cada uno de los indicadores binarios. `lavaan` reconocerá que estos indicadores observados son de tal tipo al utilizar la instrucción `ordered`. 
+
+```{r, warning=FALSE, message=FALSE}
+MD_model <- '  x1 ~ occupation + educ_yr + hh_members
+               x2 ~ occupation + educ_yr + hh_members
+               x3 ~ occupation + educ_yr + hh_members
+               x4 ~ occupation + educ_yr + hh_members
+               x5 ~ occupation + educ_yr + hh_members
+               x6 ~ occupation + educ_yr + hh_members
+               x7 ~ occupation + educ_yr + hh_members
+               x8 ~ occupation + educ_yr + hh_members
+               x9 ~ occupation + educ_yr + hh_members
+               x10 ~ occupation + educ_yr + hh_members
+               x11 ~ occupation + educ_yr + hh_members
+'
+
+fit2 <- sem(MD_model,
+           data = D,ordered=c("x1","x2","x3","x4","x5",
+                                     "x6","x7","x8","x9","x10","x11"))
+ summary(fit2)
+```
+
+El modelo de SEM es equivalente bajo un modelo probit. 
+
+```{r}
+lms<-function(index)
+{
+  fit<-glm(D[,index] ~ D$occupation +
+                              D$educ_yr +
+                              D$hh_members,
+           family=binomial(link="probit"))
+}
+
+coefs<-lapply(1:11,lms)
+
+coefs[[1]]
+```
+
